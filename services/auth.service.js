@@ -1,0 +1,198 @@
+const bcrypt = require("bcryptjs");
+const User = require("../models/user.model.js");
+const {
+  sendPasswordResetEmail,
+  sendResetSuccessEmail,
+  sendVerificationEmail,
+  sendWelcomeEmail,
+} = require("../mailtrap/emails.js");
+const generateTokens = require("../utils/generateTokens.js");
+const jwt = require("jsonwebtoken");
+
+const createUser = async (email, password, first_name, last_name, phone_number, role = 'student', profileImage = '') => {
+  const userAlreadyExists = await User.findOne({ email });
+  if (userAlreadyExists) {
+    throw new Error("User already exists");
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  const verificationToken = Math.floor(100000 + Math.random() * 900000).toString();
+
+  const user = new User({
+    email,
+    password: hashedPassword,
+    first_name,
+    last_name,
+    phone_number,
+    role,
+    profileImage,
+    verificationToken,
+    verificationTokenExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+  });
+
+  await user.save();
+
+  const { accessToken, refreshToken } = generateTokens(user._id);
+  user.refreshToken = refreshToken;
+  await user.save();
+
+  await sendVerificationEmail(user.email, user.verificationToken);
+  console.log("Verification email sent successfully", user.verificationToken);
+
+  return { user, accessToken, refreshToken };
+};
+
+const verifyUserEmail = async (code) => {
+  const user = await User.findOne({
+    verificationToken: code,
+    verificationTokenExpiresAt: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new Error("Invalid or expired verification code");
+  }
+
+  user.isVerified = true;
+  user.verificationToken = undefined;
+  user.verificationTokenExpiresAt = undefined;
+  
+  // Generate new tokens after verification
+  const { accessToken, refreshToken } = generateTokens(user._id);
+  user.refreshToken = refreshToken;
+  await user.save();
+
+  return { user, accessToken, refreshToken };
+};
+
+const loginUser = async (email, password) => {
+  const user = await User.findOne({ email });
+  if (!user) {
+    throw new Error("Invalid credentials");
+  }
+
+  const isPasswordValid = await bcrypt.compare(password, user.password);
+  if (!isPasswordValid) {
+    throw new Error("Invalid credentials");
+  }
+
+  // Update last login
+  user.lastLogin = Date.now();
+  
+  const { accessToken, refreshToken } = generateTokens(user._id);
+  user.refreshToken = refreshToken;
+  
+  try {
+    await user.save();
+  } catch (error) {
+    console.error("Error saving user with refresh token:", error);
+    throw new Error("Could not save user with refresh token");
+  }
+
+  return { user, accessToken, refreshToken };
+};
+
+const logoutUser = async (refreshToken) => {
+  if (refreshToken) {
+    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+    const user = await User.findById(decoded.userId);
+    if (user) {
+      user.refreshToken = null;
+      await user.save();
+    }
+  }
+};
+
+const resetUserPassword = async (token, password) => {
+  const user = await User.findOne({
+    resetPasswordToken: token,
+    resetPasswordExpiresAt: { $gt: Date.now() },
+  });
+
+  if (!user) {
+    throw new Error("Invalid or expired reset token");
+  }
+
+  const hashedPassword = await bcrypt.hash(password, 10);
+  user.password = hashedPassword;
+  user.resetPasswordToken = undefined;
+  user.resetPasswordExpiresAt = undefined;
+  await user.save();
+
+  return user;
+};
+
+const sendResetEmail = async (email, resetToken) => {
+  const user = await User.findOne({ email });
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  user.resetPasswordToken = resetToken;
+  user.resetPasswordExpiresAt = Date.now() + 1 * 60 * 60 * 1000;
+  console.log("this is the reset token ", resetToken);
+  await user.save();
+
+  await sendPasswordResetEmail(user.email, `${process.env.CLIENT_URL}/reset-password/${resetToken}`);
+};
+
+const deleteUser = async (userId) => {
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+  await User.findByIdAndDelete(userId);
+};
+
+const updateUser = async (userId, updates) => {
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  // Prevent updating sensitive fields directly
+  const allowedUpdates = ['first_name', 'last_name', 'phone_number', 'profileImage'];
+  const updateData = {};
+  
+  allowedUpdates.forEach(field => {
+    if (updates[field] !== undefined) {
+      updateData[field] = updates[field];
+    }
+  });
+
+  // Only allow role update for specific roles or conditions
+  if (updates.role && ['admin', 'super_admin'].includes(user.role)) {
+    updateData.role = updates.role;
+  }
+
+  Object.assign(user, updateData);
+  await user.save();
+  return user;
+};
+
+const getUserById = async (userId) => {
+  const user = await User.findById(userId).select("-password -refreshToken");
+  if (!user) {
+    throw new Error("User not found");
+  }
+  return user;
+};
+
+const getAllUsers = async () => {
+  return await User.find({}, '-password -refreshToken');
+};
+
+module.exports = {
+  createUser,
+  verifyUserEmail,
+  loginUser,
+  logoutUser,
+  resetUserPassword,
+  sendResetEmail,
+  sendVerificationEmail,
+  sendWelcomeEmail,
+  sendResetSuccessEmail,
+  deleteUser,
+  updateUser,
+  getUserById,
+  getAllUsers,
+};
