@@ -25,8 +25,8 @@ Discount Management: Merchants have options to update or delete their offers as 
 To use the car rental backend, clone the repository and install any required dependencies:
 
 ```bash
-git clone https://github.com/zeruFili/car-rental-backend.git
-cd car-rental-backend
+git clone https://github.com/zeruFili/Unidays-backend.git
+cd Unidays-backend
 
 # Install dependencies
 npm install
